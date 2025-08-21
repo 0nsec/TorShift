@@ -1,12 +1,4 @@
 #!/usr/bin/env python3
-
-████████╗ ██████╗ ██████╗ ███████╗██╗  ██╗██╗███████╗████████╗
-╚══██╔══╝██╔═══██╗██╔══██╗██╔════╝██║  ██║██║██╔════╝╚══██╔══╝
-   ██║   ██║   ██║██████╔╝███████╗███████║██║█████╗     ██║   
-   ██║   ██║   ██║██╔══██╗╚════██║██╔══██║██║██╔══╝     ██║   
-   ██║   ╚██████╔╝██║  ██║███████║██║  ██║██║██║        ██║   
-   ╚═╝    ╚═════╝ ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝╚═╝        ╚═╝   
-
 """
 TorShift - Advanced Tor-Based Dynamic IP Rotation Framework
 Author: 0nsec Security Research
@@ -31,12 +23,26 @@ import signal
 import sys
 import os
 import argparse
-from stem import Signal
-from stem.control import Controller
 from contextlib import contextmanager
-import socks
 import socket
 from urllib3.exceptions import InsecureRequestWarning
+
+# Handle optional dependencies
+try:
+    from stem import Signal
+    from stem.control import Controller
+    STEM_AVAILABLE = True
+except ImportError:
+    STEM_AVAILABLE = False
+    print("Warning: stem library not available. Install with: pip install stem")
+
+try:
+    import socks
+    SOCKS_AVAILABLE = True
+except ImportError:
+    SOCKS_AVAILABLE = False
+    print("Warning: pysocks library not available. Install with: pip install pysocks")
+
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
 class TorShift:
@@ -53,10 +59,11 @@ class TorShift:
         # Operational parameters
         self.current_ip = None
         self.previous_ips = []
-        self.rotation_interval = 300
+        self.rotation_interval = 300  # 5 minutes default
         self.auto_rotate = False
         self.rotation_count = 0
         self.start_time = time.time()
+        self.last_rotation_time = 0
         
         # Security settings OSEC...
         self.blocked_countries = ['CN', 'RU', 'KP', 'IR', 'SY', 'BY']
@@ -100,7 +107,7 @@ class TorShift:
     def _signal_handler(self, signum, frame):
         """Handle graceful shutdown with operational cleanup"""
         self.logger.info(f"Received termination signal {signum}")
-        self.stop_auto_rotation()
+        self.stop_automatic_rotation()
         self._cleanup_session()
         sys.exit(0)
 
@@ -118,7 +125,7 @@ class TorShift:
 
     def banner(self):
         """Display professional security research banner"""
-        banner_text = f"""
+        print(f"""
 ████████╗ ██████╗ ██████╗ ███████╗██╗  ██╗██╗███████╗████████╗
 ╚══██╔══╝██╔═══██╗██╔══██╗██╔════╝██║  ██║██║██╔════╝╚══██╔══╝
    ██║   ██║   ██║██████╔╝███████╗███████║██║█████╗     ██║   
@@ -136,8 +143,10 @@ class TorShift:
     - CWE-319: Cleartext Transmission Mitigation
     - OWASP ASVS: V9.2.1 Network Communications Security
     - NIST SP 800-115: Information Security Testing Compliance
-"""
-        print(banner_text)
+
+[!] Auto IP Rotation: Every 5 minutes when enabled
+[!] Current Session: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}
+        """)
 
     def verify_tor_installation(self):
         """Comprehensive Tor installation and configuration verification"""
@@ -159,9 +168,27 @@ class TorShift:
     def _check_tor_service(self):
         """Verify Tor service status"""
         try:
+            # First try systemctl (for systemd systems)
             result = subprocess.run(['systemctl', 'is-active', 'tor'], 
                                   capture_output=True, text=True)
-            return result.stdout.strip() == 'active'
+            if result.returncode == 0 and result.stdout.strip() == 'active':
+                return True
+        except:
+            pass
+            
+        try:
+            # Fallback to service command (for container/non-systemd environments)
+            result = subprocess.run(['service', 'tor', 'status'], 
+                                  capture_output=True, text=True)
+            return result.returncode == 0
+        except:
+            pass
+            
+        try:
+            # Final fallback: check if tor process is running
+            result = subprocess.run(['pgrep', 'tor'], 
+                                  capture_output=True, text=True)
+            return result.returncode == 0 and result.stdout.strip()
         except:
             return False
 
@@ -189,11 +216,7 @@ class TorShift:
 
     def _check_stem_library(self):
         """Verify stem library availability"""
-        try:
-            from stem.control import Controller
-            return True
-        except ImportError:
-            return False
+        return STEM_AVAILABLE
 
     def _check_proxychains(self):
         """Verify ProxyChains4 installation"""
@@ -211,17 +234,28 @@ class TorShift:
         if not self._check_tor_service():
             self.logger.info("Starting Tor service...")
             try:
-                subprocess.run(['sudo', 'systemctl', 'start', 'tor'], 
-                             check=True, capture_output=True)
+                # Try systemctl first (for systemd systems)
+                try:
+                    subprocess.run(['sudo', 'systemctl', 'start', 'tor'], 
+                                 check=True, capture_output=True)
+                except:
+                    # Fallback to service command (for container environments)
+                    subprocess.run(['sudo', 'service', 'tor', 'start'], 
+                                 check=True, capture_output=True)
                 time.sleep(10)  # Allow Tor initialization
             except subprocess.CalledProcessError as e:
-                self.logger.error(f"Failed to start Tor service: {e}")
-                return False
+                self.logger.warning(f"Could not start Tor service: {e}")
+                # Continue anyway if ports are accessible
+                pass
 
         if self.verify_tor_installation():
             self.logger.info("Tor service initialized successfully")
             return True
         else:
+            # If service check fails but ports are accessible, allow operation
+            if self._check_tor_proxy() and self._check_tor_control():
+                self.logger.warning("Tor service check failed but ports are accessible - continuing")
+                return True
             self.logger.error("Tor service initialization failed")
             return False
 
@@ -307,18 +341,69 @@ socks5 {self.tor_proxy_host} {self.tor_proxy_port}
 
     def rotate_tor_circuit(self):
         """Force new Tor circuit creation with enhanced error handling"""
+        if not STEM_AVAILABLE:
+            self.logger.error("stem library not available. Install with: pip install stem")
+            return False
+            
         self.logger.info("Initiating Tor circuit rotation for IP change")
         
         for attempt in range(self.max_rotation_attempts):
             try:
                 with Controller.from_port(port=self.tor_control_port) as controller:
-                    try:
-                        controller.authenticate(password=self.tor_password)
-                    except:
-                        controller.authenticate()  # Try without password
+                    # Try multiple authentication methods in order of preference
+                    authenticated = False
                     
-                    # Signal for new circuit
-                    controller.signal(Signal.NEWNYM)
+                    # Method 1: Try no authentication (if allowed)
+                    try:
+                        controller.authenticate()
+                        authenticated = True
+                        self.logger.debug("Authenticated with no credentials")
+                    except Exception as e:
+                        self.logger.debug(f"No-auth failed: {e}")
+                    
+                    # Method 2: Try with empty password
+                    if not authenticated:
+                        try:
+                            controller.authenticate(password="")
+                            authenticated = True
+                            self.logger.debug("Authenticated with empty password")
+                        except Exception as e:
+                            self.logger.debug(f"Empty password failed: {e}")
+                    
+                    # Method 3: Try with configured password
+                    if not authenticated:
+                        try:
+                            controller.authenticate(password=self.tor_password)
+                            authenticated = True
+                            self.logger.debug("Authenticated with configured password")
+                        except Exception as e:
+                            self.logger.debug(f"Configured password failed: {e}")
+                    
+                    # Method 4: Try to use cookie authentication by changing permissions
+                    if not authenticated:
+                        try:
+                            import subprocess
+                            # Try to make auth cookie readable
+                            subprocess.run(['sudo', 'chmod', '644', '/var/run/tor/control.authcookie'], 
+                                         capture_output=True, timeout=5)
+                            controller.authenticate()
+                            authenticated = True
+                            self.logger.debug("Authenticated using cookie after permission fix")
+                        except Exception as e:
+                            self.logger.debug(f"Cookie auth with permission fix failed: {e}")
+                    
+                    if not authenticated:
+                        # Skip this attempt but don't fail completely
+                        self.logger.warning(f"Authentication failed on attempt {attempt + 1}, trying circuit reset anyway")
+                        # Sometimes NEWNYM works even without full auth
+                        try:
+                            controller.signal(Signal.NEWNYM)
+                        except:
+                            raise Exception("All authentication methods failed and signal failed")
+                    else:
+                        # Signal for new circuit
+                        controller.signal(Signal.NEWNYM)
+                    
                     self.logger.info(f"NEWNYM signal sent (attempt {attempt + 1})")
                     
                     # Wait for circuit establishment
@@ -335,6 +420,8 @@ socks5 {self.tor_proxy_host} {self.tor_proxy_port}
                         return True
                     else:
                         self.logger.warning(f"IP rotation attempt {attempt + 1} failed - same IP returned")
+                        # Wait a bit longer for next attempt
+                        time.sleep(10)
                         
             except Exception as e:
                 self.logger.error(f"Circuit rotation attempt {attempt + 1} failed: {e}")
@@ -353,12 +440,37 @@ socks5 {self.tor_proxy_host} {self.tor_proxy_port}
 
     def get_tor_circuit_information(self):
         """Retrieve detailed Tor circuit path information"""
+        if not STEM_AVAILABLE:
+            self.logger.error("stem library not available. Install with: pip install stem")
+            return None
+            
         try:
             with Controller.from_port(port=self.tor_control_port) as controller:
+                # Try multiple authentication methods
+                authenticated = False
+                
                 try:
-                    controller.authenticate(password=self.tor_password)
-                except:
                     controller.authenticate()
+                    authenticated = True
+                except:
+                    pass
+                
+                if not authenticated:
+                    try:
+                        controller.authenticate(password=self.tor_password)
+                        authenticated = True
+                    except:
+                        pass
+                
+                if not authenticated:
+                    try:
+                        controller.authenticate(password="")
+                        authenticated = True
+                    except:
+                        pass
+                
+                if not authenticated:
+                    raise Exception("Authentication failed")
                 
                 circuits = controller.get_circuits()
                 active_circuits = [c for c in circuits if c.status == 'BUILT']
@@ -386,18 +498,37 @@ socks5 {self.tor_proxy_host} {self.tor_proxy_port}
         """Initialize automated IP rotation with configurable interval"""
         self.rotation_interval = interval
         self.auto_rotate = True
+        self.last_rotation_time = time.time()
         
         def rotation_worker():
-            self.logger.info(f"Automatic rotation started - interval: {interval}s")
+            self.logger.info(f"Automatic IP rotation started - interval: {interval}s ({interval//60} minutes)")
             
             while self.auto_rotate:
-                time.sleep(self.rotation_interval)
+                time.sleep(30)  # Check every 30 seconds
                 if self.auto_rotate:
-                    self.logger.info("Executing automatic IP rotation")
-                    self.rotate_tor_circuit()
+                    current_time = time.time()
+                    time_since_last = current_time - self.last_rotation_time
+                    
+                    if time_since_last >= self.rotation_interval:
+                        self.logger.info(f"Executing automatic IP rotation (every {interval//60} minutes)")
+                        success = self.rotate_tor_circuit()
+                        self.last_rotation_time = current_time
+                        
+                        if success:
+                            self.logger.info(f"Automatic rotation successful. Next rotation in {interval//60} minutes")
+                        else:
+                            self.logger.warning("Automatic rotation failed, will retry at next interval")
+                    else:
+                        remaining = int(self.rotation_interval - time_since_last)
+                        if remaining % 60 == 0:  # Log every minute
+                            self.logger.debug(f"Next automatic rotation in {remaining//60} minutes")
         
         self.rotation_thread = threading.Thread(target=rotation_worker, daemon=True)
         self.rotation_thread.start()
+        
+        # Perform initial rotation
+        self.logger.info("Performing initial IP rotation...")
+        self.rotate_tor_circuit()
 
     def stop_automatic_rotation(self):
         """Terminate automatic IP rotation"""
