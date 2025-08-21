@@ -15,6 +15,9 @@ Advanced Tor-Based Dynamic IP Rotation Framework for authorized security researc
 
 TorShift is a Python-based framework designed for security professionals to perform authorized penetration testing with enhanced anonymity through dynamic IP rotation via the Tor network. The tool provides **automatic IP rotation every 5 minutes**, comprehensive logging, and OPSEC-focused features for legitimate security research.
 
+[![asciicast](https://asciinema.org/a/UrIh7dD9zoVGGfkE5qdeGir2P.svg)](https://asciinema.org/a/UrIh7dD9zoVGGfkE5qdeGir2P)
+
+
 ## Key Features
 
 - **Automatic IP Rotation**: Built-in 5-minute interval rotation with background monitoring
