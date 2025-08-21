@@ -1,1 +1,30 @@
+# Install with: pip install -r requirements.txt
+
+# Core dependencies (from requirements.txt)
+requests>=2.25.1
+stem>=1.8.0
+pysocks>=1.7.1
+urllib3>=1.26.5
+
+# Development and testing tools
+pytest>=7.0.0
+pytest-cov>=4.0.0
+pytest-mock>=3.10.0
+black>=22.0.0
+flake8>=5.0.0
+mypy>=1.0.0
+bandit>=1.7.0
+
+# Documentation tools
+sphinx>=5.0.0
+sphinx-rtd-theme>=1.0.0
+
+# Code quality tools
+pre-commit>=2.20.0
+isort>=5.10.0
+pylint>=2.15.0
+
+# Security scanning
+safety>=2.0.0
+semgrep>=1.0.0
 
